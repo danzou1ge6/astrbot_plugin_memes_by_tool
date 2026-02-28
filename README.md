@@ -1,14 +1,61 @@
-# astrbot-plugin-helloworld
+# astrbot-plugin-memes-by-tool
 
-AstrBot 插件模板 / A template plugin for AstrBot plugin feature
+通过工具调用的方式让大模型学会发送表情包！
 
-> [!NOTE]
-> This repo is just a template of [AstrBot](https://github.com/AstrBotDevs/AstrBot) Plugin.
-> 
-> [AstrBot](https://github.com/AstrBotDevs/AstrBot) is an agentic assistant for both personal and group conversations. It can be deployed across dozens of mainstream instant messaging platforms, including QQ, Telegram, Feishu, DingTalk, Slack, LINE, Discord, Matrix, etc. In addition, it provides a reliable and extensible conversational AI infrastructure for individuals, developers, and teams. Whether you need a personal AI companion, an intelligent customer support agent, an automation assistant, or an enterprise knowledge base, AstrBot enables you to quickly build AI applications directly within your existing messaging workflows.
+*注意* 本插件仅仅提供工具，请在人格设定中敦促大模型发表情包。例如：
+```
+## 说话风格
+- 有些时候她会主动寻找适合当前语境的表情包，在对话中发送
+```
 
-# Supports
+## 安装方式
 
-- [AstrBot Repo](https://github.com/AstrBotDevs/AstrBot)
-- [AstrBot Plugin Development Docs (Chinese)](https://docs.astrbot.app/dev/star/plugin-new.html)
-- [AstrBot Plugin Development Docs (English)](https://docs.astrbot.app/en/dev/star/plugin-new.html)
+从 AstrBot 插件市场安装插件即可
+
+## 配置
+
+在 AstrBot 插件配置页面配置。需要配置
+- 多模态大语言模型：这个模型需要支持图片输入，用于生成对图片的文本描述
+- 词嵌入模型：用于快速检索
+- 最大候选表情数：基于词嵌入或者模糊匹配检索后，分数最高的若干表情的描述将被提供给大模型，大模型基于此选择合适的表情
+
+如果不提供词嵌入模型，则关键词检索将回退到字符串模糊匹配（fuzzywuzzy)
+
+## 使用方法
+
+安装并配置完成之后，通过 `/表情工具 添加` 指令添加表情包。
+插件会依次处理指令消息中包含的所有图片，并将其添加到表情库中。
+另外，还可以通过 `/表情工具 手动添加 <情感> <助记词> <描述>` 来手动设置表情。
+
+更多命令，包括 `删除` `搜索` 详见插件行为。
+
+## 工作原理
+
+本插件将表情库组织成简单的二层结构：情感词-助记词和描述。例如
+```
+1. [恼怒] 恼怒/威胁.jpg
+   描述: 穿着女仆装的动漫少女面带微笑，却手持一把锤子，给人一种看似可爱实则危险的“物理说服”威胁感。
+2. [震惊] 震惊/祈祷.jpg
+   描述: 一位白发少女瞪着圆圆的大眼睛，双手合十放在胸前，表现出震惊或紧张的祈求神情。
+```
+情感/助记词也是存放表情图片的相对路径。
+
+其中情感词、助记词和描述均可由大模型生成，也可以通过指令手动设置。
+情感词用于第一层索引，助记词仅仅用于文件名，描述则用于第二层索引。
+
+本插件提供了三个可供大模型调用的工具
+- `memes_list_emotions()`：列出表情库中的所有情感词
+- `memes_search(emotion_query: str, description_query: str)`：首先在表情库中检索出与 `emotion_query` 相似度最高的若干情感词，然后在这些情感词对应的表情中，检索出描述与 `description_query` 相似度最高的若干表情。检索结果和相似度将被提供给大模型。
+- `memes_send(path: str)`：根据相对路径发送表情
+
+## 用户数据
+
+本插件使用简单的 JSON 文件存储元数据（路径、情感、描述），使用压缩的 JSON 文件储存词嵌入。
+
+- 元数据存放在 `<data_dir>/memes.json` 中
+- 词嵌入存放在 `<data_dir>/embeddings.json.gz` 中
+- 表情图片存放在 `<data_dir>/memes/<情感词>/` 目录下，以助记词命名
+
+## 末尾
+
+本插件主体通过 GLM-5 Vibe Code 实现

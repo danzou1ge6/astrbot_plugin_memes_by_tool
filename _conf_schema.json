@@ -1,0 +1,16 @@
+{
+    "max_candidates": {
+        "description": "模糊匹配/词嵌入匹配的最大候选表情数量",
+        "type": "int",
+        "default": 10
+    },
+    "chat_provider": {
+        "description": "用于生成表情描述的大模型提供商，须支持多模态",
+        "type": "string",
+        "_special": "select_provider"
+    },
+    "embedding_provider": {
+        "description": "用于计算表情描述的词嵌入的词嵌入模型提供商",
+        "type": "string"
+    }
+}

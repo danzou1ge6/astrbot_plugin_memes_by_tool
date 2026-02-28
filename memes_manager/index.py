@@ -1,0 +1,353 @@
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from fuzzywuzzy import fuzz
+
+from astrbot.api import logger
+
+
+@dataclass
+class Meme:
+    internal_path: Path
+    description: str
+    description_embedding: list[float] | None = None
+
+
+# 用于表示表情包情感的一个中文词语
+Emotion = str
+
+
+@dataclass
+class EmotionEntry:
+    """情感条目，包含对应的词嵌入向量"""
+
+    embedding: list[float] | None = None
+
+
+@dataclass
+class FuzzySearchResult:
+    """模糊匹配搜索结果"""
+
+    meme: Meme
+    emotion: str
+    score: int  # 范围 [0, 100]，值越大表示越匹配
+
+
+@dataclass
+class EmbeddingSearchResult:
+    """词嵌入搜索结果"""
+
+    meme: Meme
+    emotion: str
+    emotion_similarity: float  # 范围 [-1, 1]，值越大表示越相似
+    description_similarity: float
+
+
+@dataclass
+class MemesStats:
+    """表情包统计信息"""
+
+    total_memes: int  # 总表情数量
+    total_emotions: int  # 总情感数量
+    embedding_enabled: bool  # 是否启用了词嵌入
+    emotions_with_embedding: int = 0  # 已计算嵌入的情感数量
+    memes_with_description_embedding: int = 0  # 已计算描述嵌入的表情数量
+    embedding_provider_id: str | None = None  # Embedding Provider ID
+    embedding_dim: int | None = None  # 词嵌入维度
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    """计算两个向量的余弦相似度
+
+    Args:
+        a: 向量 a
+        b: 向量 b
+
+    Returns:
+        余弦相似度，范围 [-1, 1]，值越大表示越相似
+    """
+    dot_product = sum(x * y for x, y in zip(a, b))
+    norm_a = sum(x * x for x in a) ** 0.5
+    norm_b = sum(x * x for x in b) ** 0.5
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot_product / (norm_a * norm_b)
+
+
+@dataclass
+class EmbeddingConfig:
+    provider_id: str
+    dim: int
+
+
+@dataclass
+class MemesTable:
+    """通过 Emotion 索引的表情列表，支持词嵌入查询
+
+    该类仅负责管理词嵌入数据和执行查询，不涉及模型调用。
+    模型调用应由外部模块（如 embedding_wrapper.py）处理。
+
+    支持两种嵌入向量：
+    1. Emotion 嵌入：情感词的语义向量
+    2. Description 嵌入：表情描述的语义向量
+    """
+
+    embedding_config: EmbeddingConfig | None
+    by_emotion: dict[Emotion, list[Meme]] = field(default_factory=dict)
+    emotion_entries: dict[Emotion, EmotionEntry] = field(default_factory=dict)
+
+    def __init__(self, embedding_config: EmbeddingConfig | None):
+        self.by_emotion = {}
+        self.emotion_entries = {}
+        self.embedding_config = embedding_config
+
+    def add(self, emotion: Emotion, meme: Meme):
+        """添加表情到指定情感类别"""
+        if emotion not in self.by_emotion:
+            self.by_emotion[emotion] = []
+        self.by_emotion[emotion].append(meme)
+
+        # 确保 emotion_entries 中有对应的条目
+        if emotion not in self.emotion_entries:
+            self.emotion_entries[emotion] = EmotionEntry()
+
+    def remove(self, path: Path) -> bool:
+        """删除指定路径的表情
+
+        Args:
+            path: 表情文件路径
+
+        Returns:
+            是否成功删除（如果表情不存在则返回 False）
+        """
+        for emotion, memes in self.by_emotion.items():
+            for i, meme in enumerate(memes):
+                if meme.internal_path == path:
+                    memes.pop(i)
+                    # 如果该情感下没有表情了，删除该情感
+                    if not memes:
+                        del self.by_emotion[emotion]
+                        if emotion in self.emotion_entries:
+                            del self.emotion_entries[emotion]
+                    return True
+        return False
+
+    def set_emotion_embedding(self, emotion: str, embedding: list[float]):
+        """设置某个 Emotion 的词嵌入向量
+
+        Args:
+            emotion: 情感词
+            embedding: 词嵌入向量
+
+        Raises:
+            ValueError: 当向量维度与已存储的维度不匹配时
+            RuntimeError: 词嵌入未启用
+        """
+        if self.embedding_config is None:
+            raise RuntimeError("词嵌入未启用")
+
+        if len(embedding) != self.embedding_config.dim:
+            raise ValueError(
+                f"向量维度不匹配：期望 {self.embedding_config.dim}，实际 {len(embedding)}"
+            )
+
+        # 确保 emotion 存在于 emotion_entries 中
+        if emotion not in self.emotion_entries:
+            self.emotion_entries[emotion] = EmotionEntry()
+
+        self.emotion_entries[emotion].embedding = embedding
+
+    def get_emotion_embedding(self, emotion: str) -> list[float] | None:
+        """获取某个 Emotion 的词嵌入向量"""
+        entry = self.emotion_entries.get(emotion)
+        return entry.embedding if entry else None
+
+    def get_emotions_without_embedding(self) -> list[str]:
+        """获取所有尚未计算词嵌入的 Emotion"""
+        return [
+            emotion
+            for emotion, entry in self.emotion_entries.items()
+            if entry.embedding is None
+        ]
+
+    def get_all_emotions(self) -> list[str]:
+        """获取所有 Emotion"""
+        return list(self.emotion_entries.keys())
+
+    def set_description_embedding(self, path: Path, embedding: list[float]):
+        """设置某个 Meme 描述的词嵌入向量
+
+        Args:
+            path: Meme 的 internal_path
+            embedding: 词嵌入向量
+
+        Raises:
+            ValueError: 当向量维度与已存储的维度不匹配时
+            KeyError: 当找不到对应路径的 Meme 时
+            RuntimeError: 词嵌入未启用
+        """
+        if self.embedding_config is None:
+            raise RuntimeError("词嵌入未启用")
+
+        # 验证向量维度
+        if len(embedding) != self.embedding_config.dim:
+            raise ValueError(
+                f"向量维度不匹配：期望 {self.embedding_config.dim}，实际 {len(embedding)}"
+            )
+
+        # 查找对应的 Meme 并设置嵌入
+        for memes in self.by_emotion.values():
+            for meme in memes:
+                if meme.internal_path == path:
+                    meme.description_embedding = embedding
+                    return
+
+        raise KeyError(f"找不到路径为 {path} 的 Meme")
+
+    def get_description_embedding(self, path: Path) -> list[float] | None:
+        """获取某个 Meme 描述的词嵌入向量"""
+        for memes in self.by_emotion.values():
+            for meme in memes:
+                if meme.internal_path == path:
+                    return meme.description_embedding
+        return None
+
+    def get_memes_without_description_embedding(self) -> list[Meme]:
+        """获取所有尚未计算描述嵌入的 Meme"""
+        result = []
+        for memes in self.by_emotion.values():
+            for meme in memes:
+                if meme.description_embedding is None:
+                    result.append(meme)
+        return result
+
+    def get_all_memes(self) -> list[Meme]:
+        """获取所有 Meme"""
+        result = []
+        for memes in self.by_emotion.values():
+            result.extend(memes)
+        return result
+
+    def search_by_embedding(
+        self, emotion_query: list[float], description_query, max_candidates: int
+    ) -> list[EmbeddingSearchResult]:
+        """基于词嵌入向量的相似度查询表情
+
+        同时搜索 Emotion 嵌入和 Description 嵌入，返回最佳匹配结果。
+
+        Args:
+            emotion_query: 情感查询文本的词嵌入向量
+            description: 描述查询文本的词嵌入向量
+            max_candidates: 最多返回的候选项数量
+
+        Returns:
+            EmbeddingSearchResult 列表，按相似度降序排序。
+
+        Raises:
+            ValueError: 当查询向量维度与已存储的向量维度不匹配时
+            RuntimeError: 词嵌入未启用
+        """
+        logger.debug(
+            f"词嵌入搜索: 维度={len(emotion_query)}, 最大候选数={max_candidates}"
+        )
+
+        if self.embedding_config is None:
+            raise RuntimeError("词嵌入未启用")
+
+        # 验证向量维度
+        #
+        if (
+            len(emotion_query) != self.embedding_config.dim
+            or len(description_query) != self.embedding_config.dim
+        ):
+            raise ValueError(
+                f"查询向量维度 {len(emotion_query)}, {len(description_query)} 与预期维度 {self.embedding_config.dim} 不匹配"
+            )
+
+        # key: internal_path, value: (Meme, Emotion, similarity)
+        emotion_candidates: dict[Emotion, float] = {}
+
+        # 1. 基于 Emotion 嵌入计算相似度
+        for emotion, entry in self.emotion_entries.items():
+            if entry.embedding is None:
+                continue
+
+            similarity = _cosine_similarity(emotion_query, entry.embedding)
+            emotion_candidates[emotion] = similarity
+
+        # 获取Top k
+        sorted_emotions = sorted(
+            emotion_candidates.items(), key=lambda x: x[1], reverse=True
+        )
+        top_emotions = sorted_emotions[:max_candidates]
+
+        candidates: dict[Path, tuple[Meme, Emotion, float]] = {}
+
+        # 2. 基于 Description 嵌入计算相似度
+        for emotion, emotion_similarity in top_emotions:
+            for meme in self.by_emotion.get(emotion, []):
+                if meme.description_embedding is None:
+                    continue
+
+                similarity = _cosine_similarity(
+                    description_query, meme.description_embedding
+                )
+                path = meme.internal_path
+                candidates[path] = (meme, emotion, similarity)
+
+        # 按相似度降序排序并返回前 max_candidates 个
+        sorted_candidates = sorted(
+            candidates.values(), key=lambda x: x[2], reverse=True
+        )
+        results = [
+            EmbeddingSearchResult(
+                meme=meme,
+                emotion=emotion,
+                emotion_similarity=emotion_candidates[emotion],
+                description_similarity=similarity,
+            )
+            for meme, emotion, similarity in sorted_candidates[:max_candidates]
+        ]
+        logger.debug(f"词嵌入搜索完成: 返回 {len(results)} 个结果")
+        return results
+
+    def search_keyword(
+        self, emotion: Emotion, kw: str, max_candidates: int
+    ) -> list[FuzzySearchResult]:
+        logger.debug(f"模糊匹配搜索: 关键词='{kw}', 最大候选数={max_candidates}")
+        """在所有表情的情感和描述中使用模糊匹配查询候选项
+
+        Args:
+            kw: 搜索关键词
+            max_candidates: 最多返回的候选项数量
+
+        Returns:
+            FuzzySearchResult 列表，按分数降序排序。
+        """
+        # 用于存储所有候选项及其分数，key 为 internal_path 用于去重
+        candidates: dict[Path, tuple[Meme, Emotion, int]] = {}
+
+        for meme in self.by_emotion.get(emotion, []):
+            # 计算情感和描述的匹配分数
+            emotion_score = fuzz.partial_ratio(kw, emotion)
+            description_score = fuzz.partial_ratio(kw, meme.description)
+            max_score = max(emotion_score, description_score)
+
+            # 如果该表情已经被记录，保留更高的分数
+            if meme.internal_path in candidates:
+                _, _, existing_score = candidates[meme.internal_path]
+                if max_score > existing_score:
+                    candidates[meme.internal_path] = (meme, emotion, max_score)
+            else:
+                candidates[meme.internal_path] = (meme, emotion, max_score)
+
+        # 按分数降序排序并返回前 max_candidates 个
+        sorted_candidates = sorted(
+            candidates.values(), key=lambda x: x[2], reverse=True
+        )
+        results = [
+            FuzzySearchResult(meme=meme, emotion=emotion, score=score)
+            for meme, emotion, score in sorted_candidates[:max_candidates]
+        ]
+        logger.debug(f"模糊匹配搜索完成: 返回 {len(results)} 个结果")
+        return results
