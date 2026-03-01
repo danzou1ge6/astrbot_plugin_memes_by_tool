@@ -230,8 +230,7 @@ class MemesTable:
 
     def search_by_embedding(
         self,
-        emotion_query: list[float],
-        description_query: list[float],
+        queries: list[list[float]],
         max_candidates: int,
     ) -> list[EmbeddingSearchResult]:
         """基于词嵌入向量的相似度查询表情
@@ -239,8 +238,7 @@ class MemesTable:
         同时搜索 Emotion 嵌入和 Description 嵌入，返回最佳匹配结果。
 
         Args:
-            emotion_query: 情感查询文本的词嵌入向量
-            description: 描述查询文本的词嵌入向量
+            queries: 查询词的嵌入向量
             max_candidates: 最多返回的候选项数量
 
         Returns:
@@ -250,22 +248,17 @@ class MemesTable:
             ValueError: 当查询向量维度与已存储的向量维度不匹配时
             RuntimeError: 词嵌入未启用
         """
-        logger.debug(
-            f"词嵌入搜索: 维度={len(emotion_query)}, 最大候选数={max_candidates}"
-        )
-
         if self.embedding_config is None:
             raise RuntimeError("词嵌入未启用")
 
-        # 验证向量维度
-        #
-        if (
-            len(emotion_query) != self.embedding_config.dim
-            or len(description_query) != self.embedding_config.dim
-        ):
+        if not all(len(q) == self.embedding_config.dim for q in queries):
             raise ValueError(
-                f"查询向量维度 {len(emotion_query)}, {len(description_query)} 与预期维度 {self.embedding_config.dim} 不匹配"
+                f"查询向量维度 {[len(q) for q in queries]} 与预期维度 {self.embedding_config.dim} 不匹配"
             )
+
+        logger.debug(
+            f"词嵌入搜索: 维度={self.embedding_config.dim}, 最大候选数={max_candidates}"
+        )
 
         # key: internal_path, value: (Meme, Emotion, similarity)
         emotion_candidates: dict[Emotion, float] = {}
@@ -275,7 +268,7 @@ class MemesTable:
             if entry.embedding is None:
                 continue
 
-            similarity = _cosine_similarity(emotion_query, entry.embedding)
+            similarity = max(_cosine_similarity(q, entry.embedding) for q in queries)
             emotion_candidates[emotion] = similarity
 
         # 获取Top k
@@ -292,8 +285,8 @@ class MemesTable:
                 if meme.description_embedding is None:
                     continue
 
-                similarity = _cosine_similarity(
-                    description_query, meme.description_embedding
+                similarity = max(
+                    _cosine_similarity(q, meme.description_embedding) for q in queries
                 )
                 path = meme.internal_path
                 candidates[path] = (meme, emotion, similarity)
@@ -315,35 +308,38 @@ class MemesTable:
         return results
 
     def search_keyword(
-        self, emotion: Emotion, kw: str, max_candidates: int
+        self, keywords: list[str], max_candidates: int
     ) -> list[FuzzySearchResult]:
         """在所有表情的情感和描述中使用模糊匹配查询候选项
 
         Args:
-            kw: 搜索关键词
+            keywords: 搜索关键词
             max_candidates: 最多返回的候选项数量
 
         Returns:
             FuzzySearchResult 列表，按分数降序排序。
         """
-        logger.debug(f"模糊匹配搜索: 关键词='{kw}', 最大候选数={max_candidates}")
+        logger.debug(f"模糊匹配搜索: 关键词='{keywords}', 最大候选数={max_candidates}")
 
         # 用于存储所有候选项及其分数，key 为 internal_path 用于去重
         candidates: dict[Path, tuple[Meme, Emotion, int]] = {}
 
-        for meme in self.by_emotion.get(emotion, []):
-            # 计算情感和描述的匹配分数
-            emotion_score = fuzz.partial_ratio(kw, emotion)
-            description_score = fuzz.partial_ratio(kw, meme.description)
-            max_score = max(emotion_score, description_score)
+        for emotion, memes in self.by_emotion.items():
+            for meme in memes:
+                # 计算情感和描述的匹配分数
+                emotion_score = max(fuzz.partial_ratio(kw, emotion) for kw in keywords)
+                description_score = max(
+                    fuzz.partial_ratio(kw, meme.description) for kw in keywords
+                )
+                max_score = max(emotion_score, description_score)
 
-            # 如果该表情已经被记录，保留更高的分数
-            if meme.internal_path in candidates:
-                _, _, existing_score = candidates[meme.internal_path]
-                if max_score > existing_score:
+                # 如果该表情已经被记录，保留更高的分数
+                if meme.internal_path in candidates:
+                    _, _, existing_score = candidates[meme.internal_path]
+                    if max_score > existing_score:
+                        candidates[meme.internal_path] = (meme, emotion, max_score)
+                else:
                     candidates[meme.internal_path] = (meme, emotion, max_score)
-            else:
-                candidates[meme.internal_path] = (meme, emotion, max_score)
 
         # 按分数降序排序并返回前 max_candidates 个
         sorted_candidates = sorted(

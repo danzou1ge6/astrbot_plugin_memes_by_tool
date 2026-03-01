@@ -425,8 +425,7 @@ class MemesEmbeddingManager:
 
     async def search(
         self,
-        emotion_query: str,
-        description_query: str,
+        queries: list[str],
         max_candidates: int = 10,
         use_embedding: bool = True,
         fallback_to_fuzzy: bool = True,
@@ -436,7 +435,7 @@ class MemesEmbeddingManager:
         优先使用词嵌入查询，失败时可选回退到模糊匹配。
 
         Args:
-            query: 查询文本
+            queries: 查询文本
             max_candidates: 最多返回的候选项数量
             use_embedding: 是否使用词嵌入查询
             fallback_to_fuzzy: 当词嵌入查询失败时是否回退到模糊匹配
@@ -449,31 +448,24 @@ class MemesEmbeddingManager:
             provider = self.get_embedding_provider()
             if provider:
                 try:
-                    emotion_query_embedding = await provider.get_embedding(
-                        emotion_query
-                    )
-                    description_query_embedding = await provider.get_embedding(
-                        description_query
-                    )
+                    embeddings = await provider.get_embeddings(queries)
                     results = self.memes_table.search_by_embedding(
-                        emotion_query_embedding,
-                        description_query_embedding,
+                        embeddings,
                         max_candidates,
                     )
                     logger.info(
-                        f"词嵌入搜索完成: 查询='{emotion_query}' '{description_query}', 结果数={len(results)}"
+                        f"词嵌入搜索完成: 查询='{queries}', 结果数={len(results)}"
                     )
                     return results
                 except Exception as e:
+                    import traceback
+
+                    traceback.print_exc()
                     logger.warning(f"词嵌入搜索失败，尝试回退到模糊匹配: {e}")
 
         if fallback_to_fuzzy or not use_embedding:
-            results = self.memes_table.search_keyword(
-                emotion_query, description_query, max_candidates
-            )
-            logger.info(
-                f"词嵌入搜索完成: 查询='{emotion_query}' '{description_query}', 结果数={len(results)}"
-            )
+            results = self.memes_table.search_keyword(queries, max_candidates)
+            logger.info(f"词嵌入搜索完成: 查询='{queries}', 结果数={len(results)}")
             return results
 
         return []

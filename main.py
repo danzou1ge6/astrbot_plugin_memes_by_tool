@@ -104,27 +104,27 @@ class MyPlugin(Star):
             yield event.plain_result(f"操作失败: {e}")
 
     @meme_tool.command("搜索")
-    async def search_meme(
-        self,
-        event: AstrMessageEvent,
-        emotion_query: str = "",
-        description_query: str = "",
-    ):
+    async def search_meme(self, event: AstrMessageEvent, query: str):
         """搜索表情
 
-        用法: /表情工具 搜索 <情感关键词> <描述关键词>
-        示例: /表情工具 搜索 开心 大笑
+        用法: /表情工具 搜索 <逗号分开的关键词列表>
+        示例: /表情工具 搜索 开心，大笑
         """
         if not self.memes_manager:
             yield event.plain_result("表情管理器未初始化")
             return
 
-        if not emotion_query or not description_query:
+        if not query:
             yield event.plain_result("请指定搜索关键词，例如: /表情工具 搜索 开心")
             return
 
+        if "，" in query:
+            queries = query.split("，")
+        else:
+            queries = query.split(",")
+
         try:
-            results = await self.memes_manager.search(emotion_query, description_query)
+            results = await self.memes_manager.search(queries)
             result_text = self._format_search_results(results)
             yield event.plain_result(result_text)
         except Exception as e:
@@ -485,20 +485,14 @@ class MyPlugin(Star):
             yield f"操作失败: {e}"
 
     @filter.llm_tool(name="memes_search")
-    async def memes_search(
-        self,
-        event: AstrMessageEvent,
-        emotion_query: str,
-        description_query: str,
-    ):
-        """根据情感和描述关键词搜索候选表情。
+    async def memes_search(self, event: AstrMessageEvent, keywords: str):
+        """根据关键词列表搜索候选表情。
 
         使用场景：当需要查找符合特定情感和描述的表情时使用此工具。
-        可以通过情感关键词（如"开心"、"悲伤"）和描述关键词（如"大笑"、"哭泣"）来搜索表情。
+        可以通过多个情感关键词（如"开心"、"悲伤"）和描述关键词（如"大笑"、"哭泣"）来搜索表情。
 
         Args:
-            emotion_query(string): 情感关键词，用于匹配表情的情感标签，例如"开心"、"悲伤"、"愤怒"等
-            description_query(string): 描述关键词，用于匹配表情的描述文本，例如"大笑"、"哭泣"、"思考"等
+            keywords(string): 关键词列表，用中文或英文逗号分开
 
         Returns:
             string: 搜索结果列表，格式为：
@@ -514,11 +508,16 @@ class MyPlugin(Star):
         if not self.memes_manager:
             raise RuntimeError("self.memes_manager未初始化")
 
-        if not emotion_query or not description_query:
+        if len(keywords) == 0:
             yield "请提供情感关键词和描述关键词"
 
+        if "，" in keywords:
+            kwds = keywords.split("，")
+        else:
+            kwds = keywords.split(",")
+
         try:
-            results = await self.memes_manager.search(emotion_query, description_query)
+            results = await self.memes_manager.search(kwds)
             result_text = self._format_search_results(results)
             yield result_text
         except Exception as e:
@@ -545,7 +544,7 @@ class MyPlugin(Star):
             assert self.memes_manager is not None
             info = self.memes_manager.get_meme_by_path(Path(path))
             if info is None:
-                yield event.plain_result(f"表情 {path} 不存在")
+                yield f"表情 {path} 不存在"
                 return
 
             _, _, file_path = info

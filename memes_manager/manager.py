@@ -299,7 +299,7 @@ class MemesManager:
             return (None, None, None)
 
     async def search(
-        self, emotion_query: str, description_query: str
+        self, queries: list[str]
     ) -> list[EmbeddingSearchResult] | list[FuzzySearchResult]:
         """搜索表情
 
@@ -315,9 +315,7 @@ class MemesManager:
         if not self._initialized:
             raise RuntimeError("未初始化")
 
-        return await self.embedding_manager.search(
-            emotion_query, description_query, self.config.max_candidates
-        )
+        return await self.embedding_manager.search(queries, self.config.max_candidates)
 
     def list_memes(self) -> list[tuple[Emotion, Meme]]:
         """列出所有表情
