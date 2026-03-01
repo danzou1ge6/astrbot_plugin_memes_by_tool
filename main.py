@@ -3,7 +3,8 @@ from pathlib import Path
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.message_components import BaseMessageComponent, Image, Plain
-from astrbot.api.star import Context, Star, register
+from astrbot.api.star import Context, Star
+from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 from .memes_manager import (
@@ -21,6 +22,8 @@ class MyPlugin(Star):
         embedding_provider_id = config.get("embedding_provider")
         if embedding_provider_id == "":
             embedding_provider_id = None
+
+        self.context = context
 
         self.config = MemesManagerConfig(
             data_dir=Path(get_astrbot_data_path()) / "plugin_data" / self.name,
@@ -543,12 +546,9 @@ class MyPlugin(Star):
 
             _, _, file_path = info
 
-            # 构建消息链
-            chain: list[BaseMessageComponent] = [
-                Image.fromFileSystem(str(file_path)),
-            ]
-
-            yield event.chain_result(chain)
+            await self.context.send_message(
+                event.unified_msg_origin, MessageChain().file_image(str(file_path))
+            )
             yield "发送成功"
 
         except Exception as e:
