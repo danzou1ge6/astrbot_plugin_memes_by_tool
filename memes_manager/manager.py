@@ -210,7 +210,9 @@ class MemesManager:
                 # 如果文件已存在，添加序号
                 counter = 1
                 while dest_path.exists():
-                    dest_path = self.memes_dir / f"{memo}_{counter}{file_path.suffix}"
+                    dest_path = (
+                        self.memes_dir / emotion / f"{memo}_{counter}{file_path.suffix}"
+                    )
                     counter += 1
 
             # 确保目标目录存在
