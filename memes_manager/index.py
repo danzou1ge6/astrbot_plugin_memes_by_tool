@@ -293,7 +293,9 @@ class MemesTable:
 
         # 按相似度降序排序并返回前 max_candidates 个
         sorted_candidates = sorted(
-            candidates.values(), key=lambda x: x[2], reverse=True
+            candidates.values(),
+            key=lambda x: x[2] * emotion_candidates[x[1]],
+            reverse=True,
         )
         results = [
             EmbeddingSearchResult(

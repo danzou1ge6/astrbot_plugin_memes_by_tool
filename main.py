@@ -14,12 +14,6 @@ from .memes_manager import (
 )
 
 
-@register(
-    "astrbot_plugin_memes_by_tool",
-    "danzou1ge6",
-    "使用工具调用为大模型提供表情包能力",
-    "0.0.1",
-)
 class MyPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
