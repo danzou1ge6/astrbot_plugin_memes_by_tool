@@ -364,9 +364,11 @@ class MemesManager:
 
             # 如果需要删除文件且删除成功
             if result and delete_file:
-                if path.exists():
-                    path.unlink()
-                    logger.info(f"删除表情文件: {path}")
+                file_path = self.memes_dir / path
+                logger.debug(f"尝试删除文件 {file_path}")
+                if file_path.exists():
+                    file_path.unlink()
+                    logger.info(f"删除表情文件: {file_path}")
 
             return result
         except Exception as e:

@@ -229,7 +229,10 @@ class MemesTable:
         return result
 
     def search_by_embedding(
-        self, emotion_query: list[float], description_query, max_candidates: int
+        self,
+        emotion_query: list[float],
+        description_query: list[float],
+        max_candidates: int,
     ) -> list[EmbeddingSearchResult]:
         """基于词嵌入向量的相似度查询表情
 
@@ -314,7 +317,6 @@ class MemesTable:
     def search_keyword(
         self, emotion: Emotion, kw: str, max_candidates: int
     ) -> list[FuzzySearchResult]:
-        logger.debug(f"模糊匹配搜索: 关键词='{kw}', 最大候选数={max_candidates}")
         """在所有表情的情感和描述中使用模糊匹配查询候选项
 
         Args:
@@ -324,6 +326,8 @@ class MemesTable:
         Returns:
             FuzzySearchResult 列表，按分数降序排序。
         """
+        logger.debug(f"模糊匹配搜索: 关键词='{kw}', 最大候选数={max_candidates}")
+
         # 用于存储所有候选项及其分数，key 为 internal_path 用于去重
         candidates: dict[Path, tuple[Meme, Emotion, int]] = {}
 
