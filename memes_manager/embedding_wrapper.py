@@ -19,6 +19,14 @@ from astrbot.api import logger
 from astrbot.core.provider.provider import EmbeddingProvider
 from astrbot.core.star.context import Context
 
+from .errors import (
+    MemesEmbeddingDisabledError,
+    MemesEmbeddingError,
+    MemesFileError,
+    MemesMemeNotFoundError,
+    MemesParseError,
+    MemesProviderNotFoundError,
+)
 from .index import (
     EmbeddingConfig,
     EmbeddingSearchResult,
@@ -85,6 +93,11 @@ class MemesEmbeddingManager:
     - 从文件加载/保存数据
     - 调用 EmbeddingProvider 计算词嵌入
     - 同步 memes.json 和 embeddings.json.gz
+
+    Contract:
+        - 所有涉及文件操作的方法可能抛出 MemesFileError
+        - 所有涉及嵌入计算的方法可能抛出 MemesEmbeddingError
+        - 当 embedding_config 为 None 时，嵌入相关方法抛出 MemesEmbeddingDisabledError
     """
 
     def __init__(
@@ -99,8 +112,6 @@ class MemesEmbeddingManager:
             memes_table: 表情表实例
             context: AstrBot 上下文，用于获取 EmbeddingProvider
             data_dir: 数据存储目录
-            embedding_provider_id: 指定使用的 EmbeddingProvider ID，
-                                  如果为 None 则使用第一个可用的 provider
         """
         self.memes_table = memes_table
         self.context = context
@@ -121,7 +132,7 @@ class MemesEmbeddingManager:
             EmbeddingProvider 实例，如果没有可用的则返回 None
 
         Raises:
-            KeyError: 找不到设置的provider
+            MemesProviderNotFoundError: 配置的 provider ID 找不到
         """
         if self._embedding_provider is not None:
             return self._embedding_provider
@@ -135,23 +146,25 @@ class MemesEmbeddingManager:
                 if provider.meta().id == self.memes_table.embedding_config.provider_id:
                     self._embedding_provider = provider
                     return provider
-            raise KeyError(
-                f"没有找到provider {self.memes_table.embedding_config.provider_id}"
+            raise MemesProviderNotFoundError(
+                provider_id=self.memes_table.embedding_config.provider_id,
+                provider_type="EmbeddingProvider",
             )
         else:
             self._embedding_provider = None
 
         return self._embedding_provider
 
-    def load_memes(self) -> bool:
+    def load_memes(self) -> None:
         """从 memes.json 加载表情数据
 
-        Returns:
-            是否成功加载
+        Raises:
+            MemesFileError: 文件读取失败
+            MemesParseError: JSON 解析失败
         """
         if not self._memes_file.exists():
             logger.info(f"表情数据文件不存在: {self._memes_file}")
-            return False
+            return
 
         try:
             with open(self._memes_file, encoding="utf-8") as f:
@@ -171,16 +184,18 @@ class MemesEmbeddingManager:
                 self.memes_table.add(emotion, meme)
 
             logger.info(f"成功加载 {len(memes_data.memes)} 个表情数据")
-            return True
+        except json.JSONDecodeError as e:
+            raise MemesParseError(f"解析 {self._memes_file} 失败", e)
+        except OSError:
+            raise MemesFileError(f"读取 {self._memes_file} 失败", self._memes_file)
         except Exception as e:
-            logger.error(f"加载表情数据失败: {e}")
-            return False
+            raise MemesParseError(f"加载表情数据失败: {e}")
 
-    def save_memes(self) -> bool:
+    def save_memes(self) -> None:
         """保存表情数据到 memes.json
 
-        Returns:
-            是否成功保存
+        Raises:
+            MemesFileError: 文件写入失败
         """
         try:
             memes_data = MemesData()
@@ -200,16 +215,21 @@ class MemesEmbeddingManager:
             logger.info(
                 f"成功保存 {len(memes_data.memes)} 个表情数据到 {self._memes_file}"
             )
-            return True
+        except OSError:
+            raise MemesFileError(f"写入 {self._memes_file} 失败", self._memes_file)
         except Exception as e:
-            logger.error(f"保存表情数据失败: {e}")
-            return False
+            raise MemesFileError(f"保存表情数据失败: {e}")
 
     def load_embeddings(self) -> bool:
         """从 embeddings.json.gz 加载词嵌入数据
 
         Returns:
-            是否成功加载
+            是否成功加载（如果未启用词嵌入或文件不存在则返回 False）
+
+        Raises:
+            MemesFileError: 文件读取失败
+            MemesParseError: JSON 解析失败
+            MemesEmbeddingError: 配置不匹配
         """
         if self.memes_table.embedding_config is None:
             logger.info("未启用词嵌入，跳过加载词嵌入数据")
@@ -227,7 +247,7 @@ class MemesEmbeddingManager:
 
             if self.memes_table.embedding_config != embeddings_data.config:
                 logger.warning(
-                    f"配置的词嵌入为{self.memes_table.embedding_config} ，而词嵌入数据使用{embeddings_data.config}，无法加载"
+                    f"配置的词嵌入为{self.memes_table.embedding_config}，而词嵌入数据使用{embeddings_data.config}，无法加载"
                 )
                 return False
 
@@ -240,8 +260,9 @@ class MemesEmbeddingManager:
                 try:
                     path = Path(path_str)
                     self.memes_table.set_description_embedding(path, embedding)
-                except KeyError:
+                except MemesMemeNotFoundError:
                     # 该路径的 Meme 不存在（可能已被删除），跳过
+                    logger.debug(f"跳过已删除表情的嵌入: {path_str}")
                     pass
 
             logger.info(
@@ -250,19 +271,31 @@ class MemesEmbeddingManager:
                 f"维度={embeddings_data.config.dim}"
             )
             return True
+        except json.JSONDecodeError as e:
+            raise MemesParseError(f"解析 {self._embeddings_file} 失败", e)
+        except OSError:
+            raise MemesFileError(
+                f"读取 {self._embeddings_file} 失败", self._embeddings_file
+            )
+        except MemesEmbeddingError:
+            raise
         except Exception as e:
-            logger.error(f"加载词嵌入数据失败: {e}")
-            return False
+            raise MemesEmbeddingError("加载词嵌入数据失败", e)
 
-    def save_embeddings(self) -> bool:
+    def save_embeddings(self) -> None:
         """保存词嵌入数据到 embeddings.json.gz
 
-        Returns:
-            是否成功保存
+        Raises:
+            MemesFileError: 文件写入失败
+            MemesEmbeddingError: 保存过程发生错误
+
+        Note:
+            如果词嵌入未启用（embedding_config 为 None），此方法会静默跳过，
+            不会抛出异常。调用者应在需要时先检查 embedding_config 是否为 None。
         """
         if self.memes_table.embedding_config is None:
-            logger.info("未启用词嵌入，跳过加载词嵌入数据")
-            return False
+            logger.debug("未启用词嵌入，跳过保存词嵌入数据")
+            return
 
         try:
             embeddings_data = EmbeddingsData(self.memes_table.embedding_config)
@@ -287,56 +320,60 @@ class MemesEmbeddingManager:
                 f"成功保存词嵌入数据: {len(embeddings_data.emotions)} 个情感, "
                 f"{len(embeddings_data.descriptions)} 个描述"
             )
-            return True
+        except OSError:
+            raise MemesFileError(
+                f"写入 {self._embeddings_file} 失败", self._embeddings_file
+            )
         except Exception as e:
-            logger.error(f"保存词嵌入数据失败: {e}")
-            return False
+            raise MemesEmbeddingError("保存词嵌入数据失败", e)
 
-    async def compute_emotion_embedding(self, emotion: str) -> list[float] | None:
+    async def compute_emotion_embedding(self, emotion: str) -> list[float]:
         """计算单个 Emotion 的词嵌入
 
         Args:
             emotion: 情感词
 
         Returns:
-            词嵌入向量，如果失败返回 None
+            词嵌入向量
+
+        Raises:
+            MemesEmbeddingDisabledError: 没有可用的 EmbeddingProvider
+            MemesEmbeddingError: 计算失败
         """
         provider = self.get_embedding_provider()
         if not provider:
-            logger.warning("无可用的 EmbeddingProvider，无法计算情感嵌入")
-            return None
+            raise MemesEmbeddingDisabledError()
 
         try:
             embedding = await provider.get_embedding(emotion)
             logger.debug(f"成功计算情感嵌入: {emotion}")
             return embedding
         except Exception as e:
-            logger.error(f"计算情感嵌入失败 '{emotion}': {e}")
-            return None
+            raise MemesEmbeddingError(f"计算情感嵌入失败 '{emotion}'", e)
 
-    async def compute_description_embedding(
-        self, description: str
-    ) -> list[float] | None:
+    async def compute_description_embedding(self, description: str) -> list[float]:
         """计算描述文本的词嵌入
 
         Args:
             description: 描述文本
 
         Returns:
-            词嵌入向量，如果失败返回 None
+            词嵌入向量
+
+        Raises:
+            MemesEmbeddingDisabledError: 没有可用的 EmbeddingProvider
+            MemesEmbeddingError: 计算失败
         """
         provider = self.get_embedding_provider()
         if not provider:
-            logger.warning("无可用的 EmbeddingProvider，无法计算描述嵌入")
-            return None
+            raise MemesEmbeddingDisabledError()
 
         try:
             embedding = await provider.get_embedding(description)
             logger.debug(f"成功计算描述嵌入: {description[:30]}...")
             return embedding
         except Exception as e:
-            logger.error(f"计算描述嵌入失败 '{description[:30]}...': {e}")
-            return None
+            raise MemesEmbeddingError(f"计算描述嵌入失败 '{description[:30]}...'", e)
 
     async def compute_embeddings_batch(
         self,
@@ -351,10 +388,14 @@ class MemesEmbeddingManager:
 
         Returns:
             (成功数量, 失败数量)
+
+        Note:
+            此方法会尽可能完成计算，单个失败不会中断整体流程。
+            失败会在日志中记录警告。
         """
         provider = self.get_embedding_provider()
         if not provider:
-            logger.warning("无可用的 EmbeddingProvider，无法计算词嵌入")
+            logger.info("无可用的 EmbeddingProvider，跳过词嵌入计算")
             return (0, 0)
 
         success_count = 0
@@ -379,11 +420,12 @@ class MemesEmbeddingManager:
                 logger.warning(f"批量计算情感嵌入失败，改为逐个计算: {e}")
                 # 批量失败，逐个尝试
                 for emotion in emotions_without_embedding:
-                    embedding = await self.compute_emotion_embedding(emotion)
-                    if embedding:
+                    try:
+                        embedding = await self.compute_emotion_embedding(emotion)
                         self.memes_table.set_emotion_embedding(emotion, embedding)
                         success_count += 1
-                    else:
+                    except MemesEmbeddingError as embed_err:
+                        logger.warning(f"计算情感嵌入失败 '{emotion}': {embed_err}")
                         fail_count += 1
 
         # 2. 批量计算 Description 嵌入
@@ -409,15 +451,18 @@ class MemesEmbeddingManager:
                 logger.warning(f"批量计算描述嵌入失败，改为逐个计算: {e}")
                 # 批量失败，逐个尝试
                 for meme in memes_without_embedding:
-                    embedding = await self.compute_description_embedding(
-                        meme.description
-                    )
-                    if embedding:
+                    try:
+                        embedding = await self.compute_description_embedding(
+                            meme.description
+                        )
                         self.memes_table.set_description_embedding(
                             meme.internal_path, embedding
                         )
                         success_count += 1
-                    else:
+                    except MemesEmbeddingError as embed_err:
+                        logger.warning(
+                            f"计算描述嵌入失败 '{meme.description[:30]}...': {embed_err}"
+                        )
                         fail_count += 1
 
         logger.info(f"词嵌入计算完成: 成功={success_count}, 失败={fail_count}")
@@ -435,7 +480,7 @@ class MemesEmbeddingManager:
         优先使用词嵌入查询，失败时可选回退到模糊匹配。
 
         Args:
-            queries: 查询文本
+            queries: 查询文本列表
             max_candidates: 最多返回的候选项数量
             use_embedding: 是否使用词嵌入查询
             fallback_to_fuzzy: 当词嵌入查询失败时是否回退到模糊匹配
@@ -443,7 +488,14 @@ class MemesEmbeddingManager:
         Returns:
             搜索结果列表，类型为 EmbeddingSearchResult 或 FuzzySearchResult，
             按分数降序排序。
+
+        Precondition:
+            len(queries) > 0
+            max_candidates > 0
         """
+        assert len(queries) > 0, "queries 不能为空"
+        assert max_candidates > 0, "max_candidates 必须大于 0"
+
         if use_embedding:
             provider = self.get_embedding_provider()
             if provider:
@@ -458,14 +510,11 @@ class MemesEmbeddingManager:
                     )
                     return results
                 except Exception as e:
-                    import traceback
-
-                    traceback.print_exc()
                     logger.warning(f"词嵌入搜索失败，尝试回退到模糊匹配: {e}")
 
         if fallback_to_fuzzy or not use_embedding:
             results = self.memes_table.search_keyword(queries, max_candidates)
-            logger.info(f"词嵌入搜索完成: 查询='{queries}', 结果数={len(results)}")
+            logger.info(f"模糊匹配搜索完成: 查询='{queries}', 结果数={len(results)}")
             return results
 
         return []
@@ -475,9 +524,12 @@ class MemesEmbeddingManager:
 
         Returns:
             清理的嵌入数量
+
+        Raises:
+            MemesFileError: 保存清理后的数据失败
         """
         if self.memes_table.embedding_config is None:
-            logger.warning("未启用词嵌入模型，跳过清理孤儿向量")
+            logger.info("未启用词嵌入模型，跳过清理孤儿向量")
             return 0
 
         logger.debug("开始清理孤儿向量...")
@@ -500,6 +552,7 @@ class MemesEmbeddingManager:
                 embeddings_data = EmbeddingsData.from_dict(data)
             except Exception as e:
                 logger.warning(f"加载嵌入数据失败，无法清理孤儿向量: {e}")
+                return 0
 
         # 清理 description 嵌入中的孤儿
         orphan_paths = [
@@ -527,17 +580,32 @@ class MemesEmbeddingManager:
 
         # 保存清理后的数据
         if cleaned > 0:
-            try:
-                with gzip.open(self._embeddings_file, "wt", encoding="utf-8") as f:
-                    json.dump(embeddings_data.to_dict(), f)
-                logger.info(f"成功清理 {cleaned} 个孤儿向量")
-            except Exception as e:
-                logger.error(f"保存清理后的嵌入数据失败: {e}")
+            self._save_embeddings_data(embeddings_data)
+            logger.info(f"成功清理 {cleaned} 个孤儿向量")
 
         if cleaned == 0:
             logger.debug("未发现孤儿向量")
 
         return cleaned
+
+    def _save_embeddings_data(self, embeddings_data: EmbeddingsData) -> None:
+        """保存嵌入数据到文件
+
+        Args:
+            embeddings_data: 要保存的嵌入数据
+
+        Raises:
+            MemesFileError: 保存失败
+        """
+        try:
+            with gzip.open(self._embeddings_file, "wt", encoding="utf-8") as f:
+                json.dump(embeddings_data.to_dict(), f)
+        except OSError:
+            raise MemesFileError(
+                f"写入 {self._embeddings_file} 失败", self._embeddings_file
+            )
+        except Exception as e:
+            raise MemesEmbeddingError("保存嵌入数据失败", e)
 
     def get_stats(self) -> MemesStats:
         """获取统计信息
@@ -579,7 +647,7 @@ class MemesEmbeddingManager:
         description: str,
         compute_embedding: bool = True,
         save: bool = True,
-    ) -> bool:
+    ) -> None:
         """添加一个新的表情
 
         Args:
@@ -589,95 +657,144 @@ class MemesEmbeddingManager:
             compute_embedding: 是否立即计算词嵌入
             save: 是否立即保存到文件
 
-        Returns:
-            是否成功添加
+        Raises:
+            MemesFileError: 保存文件失败
+            MemesEmbeddingError: 计算嵌入失败（仅当 compute_embedding=True 时）
         """
-        try:
-            meme = Meme(
-                internal_path=path,
-                description=description,
-            )
-            self.memes_table.add(emotion, meme)
-            logger.info(f"添加表情: {path} -> {emotion}")
+        meme = Meme(
+            internal_path=path,
+            description=description,
+        )
+        self.memes_table.add(emotion, meme)
+        logger.info(f"添加表情: {path} -> {emotion}")
 
-            if compute_embedding and self.memes_table.embedding_config is not None:
-                # 计算情感嵌入（如果还没有）
-                if self.memes_table.get_emotion_embedding(emotion) is None:
+        if compute_embedding and self.memes_table.embedding_config is not None:
+            # 计算情感嵌入（如果还没有）
+            if self.memes_table.get_emotion_embedding(emotion) is None:
+                try:
                     emotion_embedding = await self.compute_emotion_embedding(emotion)
-                    if emotion_embedding:
-                        self.memes_table.set_emotion_embedding(
-                            emotion, emotion_embedding
-                        )
+                    self.memes_table.set_emotion_embedding(emotion, emotion_embedding)
+                except MemesEmbeddingError as e:
+                    logger.warning(f"计算情感嵌入失败，跳过: {e}")
 
-                # 计算描述嵌入
+            # 计算描述嵌入
+            try:
                 desc_embedding = await self.compute_description_embedding(description)
-                if desc_embedding:
-                    self.memes_table.set_description_embedding(path, desc_embedding)
+                self.memes_table.set_description_embedding(path, desc_embedding)
+            except MemesEmbeddingError as e:
+                logger.warning(f"计算描述嵌入失败，跳过: {e}")
 
-            if save:
-                self.save_memes()
-                if self.memes_table.embedding_config is not None:
-                    self.save_embeddings()
+        if save:
+            self.save_memes()
+            if self.memes_table.embedding_config is not None:
+                self.save_embeddings()
 
-            return True
-        except Exception as e:
-            logger.error(f"添加表情失败: {e}")
-            return False
-
-    def remove_meme(self, path: Path, save: bool = True) -> bool:
+    def remove_meme(self, path: Path, save: bool = True) -> None:
         """删除一个表情
 
         Args:
             path: 表情文件路径
             save: 是否立即保存到文件
 
-        Returns:
-            是否成功删除（如果表情不存在则返回 False）
+        Raises:
+            MemesMemeNotFoundError: 表情不存在
+            MemesFileError: 保存文件失败
         """
-        try:
-            removed = self.memes_table.remove(path)
-            if removed:
-                logger.info(f"删除表情: {path}")
-                if save:
-                    self.save_memes()
-                    if self.memes_table.embedding_config is not None:
-                        self.save_embeddings()
-                return True
-            else:
-                logger.warning(f"表情不存在: {path}")
-                return False
-        except Exception as e:
-            logger.error(f"删除表情失败: {e}")
-            return False
+        removed = self.memes_table.remove(path)
+        if removed is None:
+            raise MemesMemeNotFoundError(path)
 
-    async def initialize(self) -> bool:
+        logger.info(f"删除表情: {path}")
+        if save:
+            self.save_memes()
+            if self.memes_table.embedding_config is not None:
+                self.save_embeddings()
+
+    def contains(self, path: Path) -> bool:
+        return self.memes_table.contains(path)
+
+    async def update_meme(
+        self,
+        emotion: str,
+        old_path: Path,
+        new_path: Path,
+        description: str,
+        compute_embedding: bool = True,
+        save: bool = True,
+    ) -> None:
+        """更新一个已有的表情
+
+        Args:
+            emotion: 情感类别
+            path: 表情文件路径（相对路径）
+            description: 表情描述
+            compute_embedding: 是否立即计算词嵌入
+            save: 是否立即保存到文件
+
+        Raises:
+            MemesMemeNotFoundError: 表情不存在
+            MemesFileError: 保存文件失败
+            MemesEmbeddingError: 计算嵌入失败（仅当 compute_embedding=True 时）
+        """
+        removed_emotion = self.memes_table.remove(
+            old_path, remove_emotion_embedding=False
+        )
+        if removed_emotion is None:
+            raise MemesMemeNotFoundError(old_path)
+
+        logger.info(f"更新表情：删除 {old_path} 的旧记录")
+
+        await self.add_meme(emotion, new_path, description, compute_embedding, save)
+
+        self.memes_table.clean_emotion_embedding(removed_emotion)
+
+    async def initialize(self) -> None:
         """初始化：加载数据并计算缺失的嵌入
 
-        Returns:
-            是否成功初始化
+        Raises:
+            MemesFileError: 加载表情数据文件失败
+            MemesParseError: 解析表情数据失败
+
+        Note:
+            词嵌入相关的错误（如加载嵌入数据失败、计算嵌入失败）会被记录为警告，
+            不会中断初始化流程，因为表情管理器可以在没有词嵌入的情况下工作。
         """
         logger.info("开始初始化 MemesEmbeddingManager...")
 
-        # 1. 加载 memes.json
+        # 1. 加载 memes.json（必须成功）
         logger.debug("加载 memes.json")
         self.load_memes()
 
-        # 2. 加载 embeddings.json.gz
+        # 2. 加载 embeddings.json.gz（可选，失败不影响核心功能）
         logger.debug("加载 embeddings.json.gz")
-        self.load_embeddings()
+        try:
+            self.load_embeddings()
+        except (MemesFileError, MemesParseError, MemesEmbeddingError) as e:
+            logger.warning(f"加载词嵌入数据失败，将使用模糊匹配搜索: {e}")
 
         # 3. 检查是否有可用的 embedding provider
         logger.debug("检查 EmbeddingProvider")
-        provider = self.get_embedding_provider()
+        try:
+            provider = self.get_embedding_provider()
+        except MemesProviderNotFoundError as e:
+            logger.warning(f"EmbeddingProvider 配置错误: {e}")
+            provider = None
+
         if provider is None:
             # 没有 provider，只能使用已有的嵌入数据
             logger.info("无可用的 EmbeddingProvider，跳过词嵌入计算")
-            return True
+            return
 
-        # 5. 计算缺失的嵌入
-        await self.compute_embeddings_batch()
+        # 4. 计算缺失的嵌入
+        try:
+            await self.compute_embeddings_batch()
+        except Exception as e:
+            logger.warning(f"批量计算词嵌入失败: {e}")
 
-        # 6. 保存嵌入数据
-        self.save_embeddings()
+        # 5. 保存嵌入数据
+        try:
+            self.save_embeddings()
+        except (MemesFileError, MemesEmbeddingError) as e:
+            logger.warning(f"保存词嵌入数据失败: {e}")
 
-        return True
+        logger.info("MemesEmbeddingManager 初始化完成")

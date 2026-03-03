@@ -1,9 +1,20 @@
+"""表情包数据结构和索引
+
+定义表情包的核心数据结构，包括 Meme、Emotion、MemesTable 等。
+"""
+
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from fuzzywuzzy import fuzz
 
 from astrbot.api import logger
+
+from .errors import (
+    MemesEmbeddingDimensionMismatchError,
+    MemesEmbeddingDisabledError,
+    MemesMemeNotFoundError,
+)
 
 
 @dataclass
@@ -65,7 +76,13 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
 
     Returns:
         余弦相似度，范围 [-1, 1]，值越大表示越相似
+
+    Precondition:
+        len(a) > 0 and len(b) > 0
     """
+    assert len(a) > 0, "向量 a 不能为空"
+    assert len(b) > 0, "向量 b 不能为空"
+
     dot_product = sum(x * y for x, y in zip(a, b))
     norm_a = sum(x * x for x in a) ** 0.5
     norm_b = sum(x * x for x in b) ** 0.5
@@ -90,6 +107,10 @@ class MemesTable:
     支持两种嵌入向量：
     1. Emotion 嵌入：情感词的语义向量
     2. Description 嵌入：表情描述的语义向量
+
+    Contract:
+        - 所有 set_* 方法要求 embedding_config 已设置（如果涉及嵌入操作）
+        - 所有 search_* 方法要求 embedding_config 已设置（如果使用嵌入搜索）
     """
 
     embedding_config: EmbeddingConfig | None
@@ -111,14 +132,17 @@ class MemesTable:
         if emotion not in self.emotion_entries:
             self.emotion_entries[emotion] = EmotionEntry()
 
-    def remove(self, path: Path) -> bool:
+    def remove(
+        self, path: Path, remove_emotion_embedding: bool = True
+    ) -> Emotion | None:
         """删除指定路径的表情
 
         Args:
             path: 表情文件路径
+            remove_emotion_embedding: 是否在情感下无表情时移除情感嵌入
 
         Returns:
-            是否成功删除（如果表情不存在则返回 False）
+            被删除表情的情感，如果表情不存在则返回 None
         """
         for emotion, memes in self.by_emotion.items():
             for i, meme in enumerate(memes):
@@ -127,10 +151,30 @@ class MemesTable:
                     # 如果该情感下没有表情了，删除该情感
                     if not memes:
                         del self.by_emotion[emotion]
-                        if emotion in self.emotion_entries:
+                        if remove_emotion_embedding and emotion in self.emotion_entries:
                             del self.emotion_entries[emotion]
+                    return emotion
+        return None
+
+    def contains(self, path: Path) -> bool:
+        for emotion, memes in self.by_emotion.items():
+            for meme in memes:
+                if meme.internal_path == path:
                     return True
         return False
+
+    def clean_emotion_embedding(self, emotion: Emotion):
+        """清理某个情感下的词嵌入
+
+        如果该情感下没有表情，则移除该情感的嵌入数据。
+        """
+        if self.by_emotion.get(emotion) is None:
+            if emotion in self.emotion_entries:
+                del self.emotion_entries[emotion]
+        elif len(self.by_emotion[emotion]) == 0:
+            del self.by_emotion[emotion]
+            if emotion in self.emotion_entries:
+                del self.emotion_entries[emotion]
 
     def set_emotion_embedding(self, emotion: str, embedding: list[float]):
         """设置某个 Emotion 的词嵌入向量
@@ -140,15 +184,16 @@ class MemesTable:
             embedding: 词嵌入向量
 
         Raises:
-            ValueError: 当向量维度与已存储的维度不匹配时
-            RuntimeError: 词嵌入未启用
+            MemesEmbeddingDisabledError: 词嵌入未启用
+            MemesEmbeddingDimensionMismatchError: 向量维度与配置不匹配
         """
         if self.embedding_config is None:
-            raise RuntimeError("词嵌入未启用")
+            raise MemesEmbeddingDisabledError()
 
         if len(embedding) != self.embedding_config.dim:
-            raise ValueError(
-                f"向量维度不匹配：期望 {self.embedding_config.dim}，实际 {len(embedding)}"
+            raise MemesEmbeddingDimensionMismatchError(
+                expected_dim=self.embedding_config.dim,
+                actual_dim=len(embedding),
             )
 
         # 确保 emotion 存在于 emotion_entries 中
@@ -158,7 +203,11 @@ class MemesTable:
         self.emotion_entries[emotion].embedding = embedding
 
     def get_emotion_embedding(self, emotion: str) -> list[float] | None:
-        """获取某个 Emotion 的词嵌入向量"""
+        """获取某个 Emotion 的词嵌入向量
+
+        Returns:
+            词嵌入向量，如果不存在则返回 None
+        """
         entry = self.emotion_entries.get(emotion)
         return entry.embedding if entry else None
 
@@ -182,17 +231,18 @@ class MemesTable:
             embedding: 词嵌入向量
 
         Raises:
-            ValueError: 当向量维度与已存储的维度不匹配时
-            KeyError: 当找不到对应路径的 Meme 时
-            RuntimeError: 词嵌入未启用
+            MemesEmbeddingDisabledError: 词嵌入未启用
+            MemesEmbeddingDimensionMismatchError: 向量维度与配置不匹配
+            MemesMemeNotFoundError: 找不到对应路径的 Meme
         """
         if self.embedding_config is None:
-            raise RuntimeError("词嵌入未启用")
+            raise MemesEmbeddingDisabledError()
 
         # 验证向量维度
         if len(embedding) != self.embedding_config.dim:
-            raise ValueError(
-                f"向量维度不匹配：期望 {self.embedding_config.dim}，实际 {len(embedding)}"
+            raise MemesEmbeddingDimensionMismatchError(
+                expected_dim=self.embedding_config.dim,
+                actual_dim=len(embedding),
             )
 
         # 查找对应的 Meme 并设置嵌入
@@ -202,10 +252,14 @@ class MemesTable:
                     meme.description_embedding = embedding
                     return
 
-        raise KeyError(f"找不到路径为 {path} 的 Meme")
+        raise MemesMemeNotFoundError(path)
 
     def get_description_embedding(self, path: Path) -> list[float] | None:
-        """获取某个 Meme 描述的词嵌入向量"""
+        """获取某个 Meme 描述的词嵌入向量
+
+        Returns:
+            词嵌入向量，如果不存在则返回 None
+        """
         for memes in self.by_emotion.values():
             for meme in memes:
                 if meme.internal_path == path:
@@ -238,22 +292,33 @@ class MemesTable:
         同时搜索 Emotion 嵌入和 Description 嵌入，返回最佳匹配结果。
 
         Args:
-            queries: 查询词的嵌入向量
+            queries: 查询词的嵌入向量列表
             max_candidates: 最多返回的候选项数量
 
         Returns:
             EmbeddingSearchResult 列表，按相似度降序排序。
 
         Raises:
-            ValueError: 当查询向量维度与已存储的向量维度不匹配时
-            RuntimeError: 词嵌入未启用
+            MemesEmbeddingDisabledError: 词嵌入未启用
+            MemesEmbeddingDimensionMismatchError: 查询向量维度与配置不匹配
+
+        Precondition:
+            len(queries) > 0
+            max_candidates > 0
         """
+        assert len(queries) > 0, "queries 不能为空"
+        assert max_candidates > 0, "max_candidates 必须大于 0"
+
         if self.embedding_config is None:
-            raise RuntimeError("词嵌入未启用")
+            raise MemesEmbeddingDisabledError()
 
         if not all(len(q) == self.embedding_config.dim for q in queries):
-            raise ValueError(
-                f"查询向量维度 {[len(q) for q in queries]} 与预期维度 {self.embedding_config.dim} 不匹配"
+            actual_dims = [len(q) for q in queries]
+            raise MemesEmbeddingDimensionMismatchError(
+                expected_dim=self.embedding_config.dim,
+                actual_dim=actual_dims[0]
+                if len(set(actual_dims)) == 1
+                else actual_dims,  # type: ignore
             )
 
         logger.debug(
@@ -271,7 +336,7 @@ class MemesTable:
             similarity = max(_cosine_similarity(q, entry.embedding) for q in queries)
             emotion_candidates[emotion] = similarity
 
-        # 获取Top k
+        # 获取 Top k
         sorted_emotions = sorted(
             emotion_candidates.items(), key=lambda x: x[1], reverse=True
         )
@@ -320,7 +385,14 @@ class MemesTable:
 
         Returns:
             FuzzySearchResult 列表，按分数降序排序。
+
+        Precondition:
+            len(keywords) > 0
+            max_candidates > 0
         """
+        assert len(keywords) > 0, "keywords 不能为空"
+        assert max_candidates > 0, "max_candidates 必须大于 0"
+
         logger.debug(f"模糊匹配搜索: 关键词='{keywords}', 最大候选数={max_candidates}")
 
         # 用于存储所有候选项及其分数，key 为 internal_path 用于去重
