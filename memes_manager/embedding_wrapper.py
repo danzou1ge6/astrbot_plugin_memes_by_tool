@@ -19,6 +19,7 @@ from astrbot.api import logger
 from astrbot.core.provider.provider import EmbeddingProvider
 from astrbot.core.star.context import Context
 
+from .atomic_write import atomic_write_gzip_json, atomic_write_json
 from .errors import (
     MemesEmbeddingDisabledError,
     MemesEmbeddingError,
@@ -194,31 +195,26 @@ class MemesEmbeddingManager:
     def save_memes(self) -> None:
         """保存表情数据到 memes.json
 
+        使用原子写入确保数据完整性。
+
         Raises:
             MemesFileError: 文件写入失败
         """
-        try:
-            memes_data = MemesData()
-            for emotion, memes in self.memes_table.by_emotion.items():
-                for meme in memes:
-                    memes_data.memes.append(
-                        {
-                            "path": str(meme.internal_path),
-                            "emotion": emotion,
-                            "description": meme.description,
-                        }
-                    )
+        memes_data = MemesData()
+        for emotion, memes in self.memes_table.by_emotion.items():
+            for meme in memes:
+                memes_data.memes.append(
+                    {
+                        "path": str(meme.internal_path),
+                        "emotion": emotion,
+                        "description": meme.description,
+                    }
+                )
 
-            with open(self._memes_file, "w", encoding="utf-8") as f:
-                json.dump(memes_data.to_dict(), f, ensure_ascii=False, indent=2)
+        # 原子写入
+        atomic_write_json(self._memes_file, memes_data.to_dict())
 
-            logger.info(
-                f"成功保存 {len(memes_data.memes)} 个表情数据到 {self._memes_file}"
-            )
-        except OSError:
-            raise MemesFileError(f"写入 {self._memes_file} 失败", self._memes_file)
-        except Exception as e:
-            raise MemesFileError(f"保存表情数据失败: {e}")
+        logger.info(f"成功保存 {len(memes_data.memes)} 个表情数据到 {self._memes_file}")
 
     def load_embeddings(self) -> bool:
         """从 embeddings.json.gz 加载词嵌入数据
@@ -285,9 +281,10 @@ class MemesEmbeddingManager:
     def save_embeddings(self) -> None:
         """保存词嵌入数据到 embeddings.json.gz
 
+        使用原子写入确保数据完整性。
+
         Raises:
             MemesFileError: 文件写入失败
-            MemesEmbeddingError: 保存过程发生错误
 
         Note:
             如果词嵌入未启用（embedding_config 为 None），此方法会静默跳过，
@@ -297,35 +294,28 @@ class MemesEmbeddingManager:
             logger.debug("未启用词嵌入，跳过保存词嵌入数据")
             return
 
-        try:
-            embeddings_data = EmbeddingsData(self.memes_table.embedding_config)
+        embeddings_data = EmbeddingsData(self.memes_table.embedding_config)
 
-            # 保存 emotion 嵌入
-            for emotion in self.memes_table.get_all_emotions():
-                embedding = self.memes_table.get_emotion_embedding(emotion)
-                if embedding:
-                    embeddings_data.emotions[emotion] = embedding
+        # 保存 emotion 嵌入
+        for emotion in self.memes_table.get_all_emotions():
+            embedding = self.memes_table.get_emotion_embedding(emotion)
+            if embedding:
+                embeddings_data.emotions[emotion] = embedding
 
-            # 保存 description 嵌入
-            for meme in self.memes_table.get_all_memes():
-                if meme.description_embedding:
-                    embeddings_data.descriptions[str(meme.internal_path)] = (
-                        meme.description_embedding
-                    )
+        # 保存 description 嵌入
+        for meme in self.memes_table.get_all_memes():
+            if meme.description_embedding:
+                embeddings_data.descriptions[str(meme.internal_path)] = (
+                    meme.description_embedding
+                )
 
-            with gzip.open(self._embeddings_file, "wt", encoding="utf-8") as f:
-                json.dump(embeddings_data.to_dict(), f)
+        # 原子写入
+        atomic_write_gzip_json(self._embeddings_file, embeddings_data.to_dict())
 
-            logger.info(
-                f"成功保存词嵌入数据: {len(embeddings_data.emotions)} 个情感, "
-                f"{len(embeddings_data.descriptions)} 个描述"
-            )
-        except OSError:
-            raise MemesFileError(
-                f"写入 {self._embeddings_file} 失败", self._embeddings_file
-            )
-        except Exception as e:
-            raise MemesEmbeddingError("保存词嵌入数据失败", e)
+        logger.info(
+            f"成功保存词嵌入数据: {len(embeddings_data.emotions)} 个情感, "
+            f"{len(embeddings_data.descriptions)} 个描述"
+        )
 
     async def compute_emotion_embedding(self, emotion: str) -> list[float]:
         """计算单个 Emotion 的词嵌入
@@ -493,8 +483,10 @@ class MemesEmbeddingManager:
             len(queries) > 0
             max_candidates > 0
         """
-        assert len(queries) > 0, "queries 不能为空"
-        assert max_candidates > 0, "max_candidates 必须大于 0"
+        if len(queries) == 0:
+            raise RuntimeError("queries 不能为空")
+        if max_candidates <= 0:
+            raise RuntimeError("max_candidates 必须大于 0")
 
         if use_embedding:
             provider = self.get_embedding_provider()
@@ -589,7 +581,7 @@ class MemesEmbeddingManager:
         return cleaned
 
     def _save_embeddings_data(self, embeddings_data: EmbeddingsData) -> None:
-        """保存嵌入数据到文件
+        """保存嵌入数据到文件（原子写入）
 
         Args:
             embeddings_data: 要保存的嵌入数据
@@ -597,15 +589,7 @@ class MemesEmbeddingManager:
         Raises:
             MemesFileError: 保存失败
         """
-        try:
-            with gzip.open(self._embeddings_file, "wt", encoding="utf-8") as f:
-                json.dump(embeddings_data.to_dict(), f)
-        except OSError:
-            raise MemesFileError(
-                f"写入 {self._embeddings_file} 失败", self._embeddings_file
-            )
-        except Exception as e:
-            raise MemesEmbeddingError("保存嵌入数据失败", e)
+        atomic_write_gzip_json(self._embeddings_file, embeddings_data.to_dict())
 
     def get_stats(self) -> MemesStats:
         """获取统计信息

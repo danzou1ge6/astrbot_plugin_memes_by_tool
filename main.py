@@ -9,9 +9,8 @@ from pathlib import Path
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.message_components import Image, Plain
-from astrbot.api.star import Context, Star
+from astrbot.api.star import Context, Star, StarTools
 from astrbot.core.message.message_event_result import MessageChain
-from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 from .memes_manager import (
     EmbeddingSearchResult,
@@ -43,7 +42,7 @@ class MyPlugin(Star):
         self.context = context
 
         self.config = MemesManagerConfig(
-            data_dir=Path(get_astrbot_data_path()) / "plugin_data" / self.name,
+            data_dir=StarTools.get_data_dir(),
             chat_provider_id=config.get("chat_provider"),
             embedding_provider_id=embedding_provider_id,
             max_candidates=config["max_candidates"],
@@ -66,7 +65,8 @@ class MyPlugin(Star):
 
         用法: /表情工具 情感
         """
-        assert self.memes_manager is not None
+        if self.memes_manager is None:
+            raise RuntimeError("MemesManager 未初始化")
 
         emotions = self.memes_manager.get_all_emotions()
         if not emotions:
@@ -87,7 +87,8 @@ class MyPlugin(Star):
         用法: /表情工具 列出 <情感>
         示例: /表情工具 列出 开心
         """
-        assert self.memes_manager is not None
+        if self.memes_manager is None:
+            raise RuntimeError("MemesManager 未初始化")
 
         if not emotion:
             yield event.plain_result("请指定情感标签，例如: /表情工具 列出 开心")
@@ -111,7 +112,8 @@ class MyPlugin(Star):
         用法: /表情工具 搜索 <逗号分开的关键词列表>
         示例: /表情工具 搜索 开心，大笑
         """
-        assert self.memes_manager is not None
+        if self.memes_manager is None:
+            raise RuntimeError("MemesManager 未初始化")
 
         if not query:
             yield event.plain_result("请指定搜索关键词，例如: /表情工具 搜索 开心")
@@ -132,7 +134,8 @@ class MyPlugin(Star):
 
         用法: /表情工具 添加 (需要回复包含图片的消息或发送带图片的消息)
         """
-        assert self.memes_manager is not None
+        if self.memes_manager is None:
+            raise RuntimeError("MemesManager 未初始化")
 
         # 获取消息中的所有图片
         messages = event.get_messages()
@@ -214,7 +217,8 @@ class MyPlugin(Star):
         示例: /表情工具 手动添加 开心 大笑 一个小人咧开嘴，举起手，开心地大笑
         注意: 需要回复包含图片的消息
         """
-        assert self.memes_manager is not None
+        if self.memes_manager is None:
+            raise RuntimeError("MemesManager 未初始化")
 
         if not emotion or not description or not memo:
             yield event.plain_result(
@@ -267,7 +271,8 @@ class MyPlugin(Star):
         示例: /表情工具 列出 开心 (先查看表情路径)
               /表情工具 删除 开心/happy.jpg
         """
-        assert self.memes_manager is not None
+        if self.memes_manager is None:
+            raise RuntimeError("MemesManager 未初始化")
 
         if not path:
             yield event.plain_result(
@@ -298,7 +303,8 @@ class MyPlugin(Star):
         用法: /表情工具 更新 <路径> <情感> <助记词> <描述>
         示例: /表情工具 更新 伤心/大哭.jpg 开心 大笑 一个小人咧开嘴，举起手，开心地大笑
         """
-        assert self.memes_manager is not None
+        if self.memes_manager is None:
+            raise RuntimeError("MemesManager 未初始化")
 
         if not old_path or not memo or not emotion or not description:
             yield event.plain_result(
@@ -332,7 +338,8 @@ class MyPlugin(Star):
             )
             return
 
-        assert self.memes_manager is not None
+        if self.memes_manager is None:
+            raise RuntimeError("MemesManager 未初始化")
 
         try:
             info = self.memes_manager.get_meme_by_path(Path(path))
@@ -355,7 +362,8 @@ class MyPlugin(Star):
 
         用法: /表情工具 清理词嵌入
         """
-        assert self.memes_manager is not None
+        if self.memes_manager is None:
+            raise RuntimeError("MemesManager 未初始化")
 
         # 获取清理前的统计
         stats_before = self.memes_manager.get_stats()
@@ -381,7 +389,8 @@ class MyPlugin(Star):
 
         用法: /表情工具 统计
         """
-        assert self.memes_manager is not None
+        if self.memes_manager is None:
+            raise RuntimeError("MemesManager 未初始化")
 
         stats = self.memes_manager.get_stats()
 
@@ -451,7 +460,8 @@ class MyPlugin(Star):
                 2. 悲伤 (3 个表情)
                 ..."
         """
-        assert self.memes_manager is not None
+        if self.memes_manager is None:
+            raise RuntimeError("MemesManager 未初始化")
 
         emotions = self.memes_manager.get_all_emotions()
         if not emotions:
@@ -484,7 +494,8 @@ class MyPlugin(Star):
 
                 2. ..."
         """
-        assert self.memes_manager is not None
+        if self.memes_manager is None:
+            raise RuntimeError("MemesManager 未初始化")
 
         if not keywords:
             yield "请提供情感关键词和描述关键词"
@@ -520,11 +531,12 @@ class MyPlugin(Star):
             description(string): 用一句简短的中文描述这个表情的内容或含义
 
         Returns:
-            是否成功添加
+            新表情的内部路径
         """
-        assert self.memes_manager is not None
+        if self.memes_manager is None:
+            raise RuntimeError("MemesManager 未初始化")
 
-        await self.memes_manager.add_meme_from_file(
+        path = await self.memes_manager.add_meme_from_file(
             file_path=Path(file_path),
             emotion=emotion,
             memo=memo,
@@ -533,7 +545,7 @@ class MyPlugin(Star):
             copy_file=True,
         )
 
-        yield "添加成功"
+        yield str(path)
 
     @filter.llm_tool(name="memes_update")
     async def memes_update(
@@ -558,7 +570,8 @@ class MyPlugin(Star):
         Returns:
             是否成功更新
         """
-        assert self.memes_manager is not None
+        if self.memes_manager is None:
+            raise RuntimeError("MemesManager 未初始化")
 
         try:
             await self.memes_manager.update_meme(Path(path), emotion, memo, description)
@@ -585,7 +598,8 @@ class MyPlugin(Star):
             yield "请提供表情路径"
             return
 
-        assert self.memes_manager is not None
+        if self.memes_manager is None:
+            raise RuntimeError("MemesManager 未初始化")
 
         try:
             _, _, file_path = self.memes_manager.get_meme_by_path(Path(path))

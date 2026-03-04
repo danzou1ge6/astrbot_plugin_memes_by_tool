@@ -296,9 +296,12 @@ class MemesManager:
         Precondition:
             len(emotion) > 0 and len(memo) > 0 and len(suffix) > 0
         """
-        assert len(emotion) > 0, "emotion 不能为空"
-        assert len(memo) > 0, "memo 不能为空"
-        assert len(suffix) > 0, "suffix 不能为空"
+        if len(emotion) == 0:
+            raise RuntimeError("emotion 不能为空")
+        if len(memo) == 0:
+            raise RuntimeError("memo 不能为空")
+        if len(suffix) == 0:
+            raise RuntimeError("suffix 不能为空")
 
         # 生成目标路径，避免重名
         dest_path = Path(emotion) / f"{memo}{suffix}"
@@ -329,7 +332,8 @@ class MemesManager:
         Precondition:
             file_path.exists()
         """
-        assert file_path.exists(), f"源文件不存在: {file_path}"
+        if not file_path.exists():
+            raise RuntimeError(f"源文件不存在: {file_path}")
 
         # 生成目标路径，避免重名
         dest_path = self.new_path(emotion, memo, file_path.suffix)
@@ -448,7 +452,8 @@ class MemesManager:
             len(queries) > 0
         """
         self._check_initialized()
-        assert len(queries) > 0, "queries 不能为空"
+        if len(queries) == 0:
+            raise RuntimeError("queries 不能为空")
 
         return await self.embedding_manager.search(queries, self.config.max_candidates)
 

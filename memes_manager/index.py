@@ -80,8 +80,10 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
     Precondition:
         len(a) > 0 and len(b) > 0
     """
-    assert len(a) > 0, "向量 a 不能为空"
-    assert len(b) > 0, "向量 b 不能为空"
+    if len(a) == 0:
+        raise RuntimeError("向量 a 不能为空")
+    if len(b) == 0:
+        raise RuntimeError("向量 b 不能为空")
 
     dot_product = sum(x * y for x, y in zip(a, b))
     norm_a = sum(x * x for x in a) ** 0.5
@@ -306,8 +308,10 @@ class MemesTable:
             len(queries) > 0
             max_candidates > 0
         """
-        assert len(queries) > 0, "queries 不能为空"
-        assert max_candidates > 0, "max_candidates 必须大于 0"
+        if len(queries) == 0:
+            raise RuntimeError("queries 不能为空")
+        if max_candidates <= 0:
+            raise RuntimeError("max_candidates 必须大于 0")
 
         if self.embedding_config is None:
             raise MemesEmbeddingDisabledError()
@@ -390,8 +394,10 @@ class MemesTable:
             len(keywords) > 0
             max_candidates > 0
         """
-        assert len(keywords) > 0, "keywords 不能为空"
-        assert max_candidates > 0, "max_candidates 必须大于 0"
+        if len(keywords) == 0:
+            raise RuntimeError("keywords 不能为空")
+        if max_candidates <= 0:
+            raise RuntimeError("max_candidates 必须大于 0")
 
         logger.debug(f"模糊匹配搜索: 关键词='{keywords}', 最大候选数={max_candidates}")
 

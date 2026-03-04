@@ -7,6 +7,7 @@
 - 错误类型定义
 """
 
+from .atomic_write import atomic_write_gzip_json, atomic_write_json, atomic_write_text
 from .embedding_wrapper import EmbeddingsData, MemesData, MemesEmbeddingManager
 from .errors import (
     MemesConfigError,
@@ -38,6 +39,10 @@ from .index import (
 from .manager import MemesManager, MemesManagerConfig
 
 __all__ = [
+    # atomic_write.py
+    "atomic_write_json",
+    "atomic_write_gzip_json",
+    "atomic_write_text",
     # errors.py
     "MemesError",
     "MemesNotInitializedError",
