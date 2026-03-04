@@ -123,6 +123,74 @@ class MemesManager:
         if not self._initialized:
             raise MemesNotInitializedError()
 
+    def _validate_path_component(self, component: str, name: str) -> str:
+        """验证路径组件是否安全
+
+        检查路径组件是否包含可能导致路径遍历的不安全字符。
+
+        Args:
+            component: 要验证的路径组件
+            name: 组件名称，用于错误信息
+
+        Returns:
+            验证后的路径组件
+
+        Raises:
+            MemesFileError: 路径组件不安全
+        """
+        # 移除前后空白
+        component = component.strip()
+
+        # 检查是否为空
+        if not component:
+            raise MemesFileError(
+                f"{name} 不能为空", Path(component) if component else Path(".")
+            )
+
+        # 检查是否包含路径遍历字符
+        if ".." in component:
+            raise MemesFileError(f"{name} 包含非法字符 '..'", Path(component))
+
+        # 检查是否包含路径分隔符
+        if "/" in component or "\\" in component:
+            raise MemesFileError(f"{name} 包含非法路径分隔符", Path(component))
+
+        # 检查是否为绝对路径（Windows 风格）
+        if len(component) >= 2 and component[1] == ":":
+            raise MemesFileError(f"{name} 不能是绝对路径", Path(component))
+
+        return component
+
+    def _validate_and_resolve_path(self, rel_path: Path) -> Path:
+        """验证并解析相对路径，确保在 memes_dir 内
+
+        防止路径遍历攻击，确保最终路径在 self.memes_dir 目录内。
+
+        Args:
+            rel_path: 相对路径
+
+        Returns:
+            验证后的绝对路径
+
+        Raises:
+            MemesFileError: 路径不安全（尝试遍历到 memes_dir 之外）
+        """
+        # 检查是否为绝对路径
+        if rel_path.is_absolute():
+            raise MemesFileError(f"路径不能是绝对路径: {rel_path}", rel_path)
+
+        # 解析最终路径
+        resolved_path = (self.memes_dir / rel_path).resolve()
+        memes_dir_resolved = self.memes_dir.resolve()
+
+        # 确保最终路径在 memes_dir 内
+        try:
+            resolved_path.relative_to(memes_dir_resolved)
+        except ValueError:
+            raise MemesFileError(f"路径不在允许的目录内: {rel_path}", rel_path)
+
+        return resolved_path
+
     async def initialize(self) -> None:
         """初始化管理器，加载现有数据
 
@@ -167,6 +235,9 @@ class MemesManager:
             MemesEmbeddingError: 计算嵌入失败
         """
         self._check_initialized()
+
+        # 验证路径安全性
+        self._validate_and_resolve_path(old_path)
 
         new_path = self.new_path(emotion, memo, old_path.suffix)
 
@@ -293,13 +364,16 @@ class MemesManager:
         Returns:
             新的表情路径，保证无冲突
 
+        Raises:
+            MemesFileError: 路径组件不安全
+
         Precondition:
             len(emotion) > 0 and len(memo) > 0 and len(suffix) > 0
         """
-        if len(emotion) == 0:
-            raise RuntimeError("emotion 不能为空")
-        if len(memo) == 0:
-            raise RuntimeError("memo 不能为空")
+        # 验证路径组件安全性，防止路径遍历攻击
+        emotion = self._validate_path_component(emotion, "emotion")
+        memo = self._validate_path_component(memo, "memo")
+
         if len(suffix) == 0:
             raise RuntimeError("suffix 不能为空")
 
@@ -497,9 +571,12 @@ class MemesManager:
         Raises:
             MemesNotInitializedError: 未初始化
             MemesMemeNotFoundError: 表情不存在
-            MemesFileError: 保存文件失败
+            MemesFileError: 保存文件失败或路径不安全
         """
         self._check_initialized()
+
+        # 验证路径安全性
+        self._validate_and_resolve_path(path)
 
         # 从 embedding manager 删除（如果不存在会抛出 MemesMemeNotFoundError）
         self.embedding_manager.remove_meme(path, save=True)
@@ -528,8 +605,12 @@ class MemesManager:
             MemesNotInitializedError: 未初始化
             MemesMemeNotFoundError: 表情不存在
             MemesFileNotFoundError: 文件不存在
+            MemesFileError: 路径不安全
         """
         self._check_initialized()
+
+        # 验证路径安全性
+        self._validate_and_resolve_path(path)
 
         for emotion, meme_list in self.embedding_manager.memes_table.by_emotion.items():
             for meme in meme_list:
